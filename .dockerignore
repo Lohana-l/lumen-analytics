@@ -1,0 +1,32 @@
+# Hors du contexte de build Docker : artefacts volumineux ou locaux.
+# Évite d'embarquer 18 Mo de CSV et les packages dbt vendorés dans les images.
+.git
+.github
+.claude
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.DS_Store
+
+# Données et artefacts générés (recréés par le bootstrap)
+data/raw/*
+!data/raw/.gitkeep
+data/ge_reports/*
+!data/ge_reports/.gitkeep
+data/evidently_reports/*
+!data/evidently_reports/.gitkeep
+ml/models/*
+!ml/models/.gitkeep
+
+# dbt local
+dbt/target
+dbt/dbt_packages
+dbt/logs
+dbt/.user.yml
+
+# Docs et captures : inutiles dans les images
+docs
+*.md

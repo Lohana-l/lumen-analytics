@@ -1,0 +1,70 @@
+# -- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.Python
+build/
+dist/
+pip-wheel-metadata/
+
+# Virtual envs
+.venv/
+venv/
+env/
+.env
+
+# -- Tooling ---------------------------------------------------------------
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.mypy_cache/
+.sqlfluff_cache/
+
+# -- dbt -------------------------------------------------------------------
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+dbt/profiles.yml.local
+
+# -- Data + model artifacts ------------------------------------------------
+# Keep the folders (via .gitkeep), ignore their contents.
+data/raw/*
+!data/raw/.gitkeep
+data/ge_reports/*
+!data/ge_reports/.gitkeep
+data/evidently_reports/*
+!data/evidently_reports/.gitkeep
+
+ml/models/*
+!ml/models/.gitkeep
+
+# MLflow (when run locally without docker)
+mlruns/
+mlflow.db
+
+# -- Prefect ---------------------------------------------------------------
+prefect.db
+prefect/.prefect/
+
+# -- IDE -------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# -- Claude Code (local config) --------------------------------------------
+.claude/
+
+# -- Streamlit local UI preference -----------------------------------------
+.streamlit/.theme_pref
+
+# -- dbt local user ID -----------------------------------------------------
+dbt/.user.yml
+
+# -- Docker ----------------------------------------------------------------
+*.log

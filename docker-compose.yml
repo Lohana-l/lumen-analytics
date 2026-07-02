@@ -1,0 +1,344 @@
+# ============================================================================
+# Cairn Analytics - stack locale complète.
+# ----------------------------------------------------------------------------
+# postgres   : warehouse (schémas raw + marts + analytics)  port hôte 5532
+# pipeline   : container éphémère pour les CLIs seed / ingest / dbt / ml
+# dbt        : image éphémère dbt-labs/dbt-postgres
+# mlflow     : tracking MLflow + UI du registry (http://localhost:5001)
+# api        : service FastAPI churn           (http://localhost:8100)
+# prefect    : serveur Prefect 3 + worker      (http://localhost:4200)
+# streamlit  : dashboard Streamlit             (http://localhost:8601)
+# ----- Observabilité (profil : obs) -----
+# prometheus : stockage métriques + scraper    (http://localhost:9090)
+# grafana    : dashboards + alerting           (http://localhost:3200)
+# loki       : backend d'agrégation de logs    (http://localhost:3100)
+# promtail   : lit les logs Docker et les envoie à Loki
+# ----------------------------------------------------------------------------
+# Identifiants : AUCUN secret en dur. Toutes les valeurs sont injectées via
+# l'interpolation ${VAR:-defaut}. Les défauts (cairn / password / admin) sont
+# des identifiants de DEV LOCAL jetables, documentés dans .env.example.
+# Pour les personnaliser : copier .env.example en .env (gitignoré) et éditer.
+# ============================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cairn_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cairn}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-cairn}
+    ports:
+      - "5532:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cairn"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks: [cairn_network]
+
+  pipeline:
+    build:
+      context: .
+      dockerfile: pipeline/Dockerfile
+    container_name: cairn_pipeline
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-cairn}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-cairn}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    depends_on:
+      postgres: { condition: service_healthy }
+    volumes:
+      - .:/app
+    working_dir: /app
+    networks: [cairn_network]
+
+  dbt:
+    build:
+      context: .
+      dockerfile: pipeline/Dockerfile
+    container_name: cairn_dbt
+    environment:
+      DBT_POSTGRES_HOST: postgres
+      DBT_POSTGRES_PORT: 5432
+      DBT_POSTGRES_USER: ${POSTGRES_USER:-cairn}
+      DBT_POSTGRES_PASS: ${POSTGRES_PASSWORD:-password}
+      DBT_POSTGRES_DBNAME: ${POSTGRES_DB:-cairn}
+      DBT_POSTGRES_SCHEMA: marts
+    working_dir: /app/dbt
+    depends_on:
+      postgres: { condition: service_healthy }
+    volumes:
+      - .:/app
+      - ./dbt/profiles.yml:/root/.dbt/profiles.yml
+    networks: [cairn_network]
+
+  # ----------------------------------------------------------------------
+  # MLflow - suivi des expériences + registre de modèles
+  # ----------------------------------------------------------------------
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.19.0
+    container_name: cairn_mlflow
+    command: ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000",
+              "--backend-store-uri", "sqlite:////mlflow-data/mlflow.db",
+              "--default-artifact-root", "/mlflow-artifacts"]
+    ports: ["5001:5000"]
+    volumes:
+      - mlflow_artifacts:/mlflow-artifacts
+      - mlflow_data:/mlflow-data
+    networks: [cairn_network]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ----------------------------------------------------------------------
+  # FastAPI - service de prédiction de churn
+  # ----------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    container_name: cairn_api
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-cairn}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-cairn}
+      CAIRN_MODEL_DIR: /app/ml/models
+    ports: ["8100:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    volumes:
+      - ./ml/models:/app/ml/models:ro
+    networks: [cairn_network]
+    healthcheck:
+      # timeout=3 : sans lui, un urlopen bloqué compte comme "healthy en cours"
+      # jusqu'au timeout du healthcheck et fausse la détection de panne.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ----------------------------------------------------------------------
+  # Prefect 3 - serveur + worker embarqué (déploiements créés au démarrage)
+  # ----------------------------------------------------------------------
+  prefect:
+    build:
+      context: .
+      dockerfile: flows/Dockerfile
+    container_name: cairn_prefect
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-cairn}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-cairn}
+      # Même forme que partout ailleurs (http://prefect:4200/api) : le nom de
+      # service résout aussi depuis ce conteneur, et personne ne copie un
+      # localhost piégeux en réutilisant ce bloc.
+      PREFECT_API_URL: http://prefect:4200/api
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://${POSTGRES_USER:-cairn}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-cairn}
+    ports: ["4200:4200"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    volumes:
+      - .:/app
+    networks: [cairn_network]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4200/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+
+  # ----------------------------------------------------------------------
+  # Bootstrap - job ONE-SHOT au démarrage : remplit le warehouse + entraîne
+  # le modèle + génère les prédictions AVANT que Streamlit ne démarre.
+  # ----------------------------------------------------------------------
+  # Pourquoi : sur une machine vierge, postgres est vide, donc Streamlit n'aurait
+  # rien à afficher (et basculerait en fallback synthétique). Ce service rend
+  # `docker compose up` autosuffisant : on lance, le pipeline tourne, le
+  # dashboard ouvre en mode LIVE. Idempotent (seed UUID5 + ON CONFLICT,
+  # marts en table, predictions upsertées) : peut tourner à chaque `up`.
+  # ----------------------------------------------------------------------
+  bootstrap:
+    build:
+      context: .
+      dockerfile: flows/Dockerfile          # même image que prefect : a tout (data + dbt + ML + prefect)
+    container_name: cairn_bootstrap
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-cairn}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-cairn}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      PREFECT_API_URL: http://prefect:4200/api
+      # Variables consommées par dbt/profiles.yml
+      DBT_POSTGRES_HOST: postgres
+      DBT_POSTGRES_PORT: 5432
+      DBT_POSTGRES_USER: ${POSTGRES_USER:-cairn}
+      DBT_POSTGRES_PASS: ${POSTGRES_PASSWORD:-password}
+      DBT_POSTGRES_DBNAME: ${POSTGRES_DB:-cairn}
+      DBT_POSTGRES_SCHEMA: marts
+    depends_on:
+      postgres: { condition: service_healthy }
+      mlflow:   { condition: service_healthy }
+      prefect:  { condition: service_healthy }
+    volumes:
+      - .:/app
+      - ./dbt/profiles.yml:/root/.dbt/profiles.yml
+    working_dir: /app
+    # La logique vit dans scripts/bootstrap.sh : versionné, testable hors
+    # Docker, debuggable (bash -x), conforme à la séparation YAML (config)
+    # vs shell (logique).
+    command: ["bash", "scripts/bootstrap.sh"]
+    restart: "no"                            # job batch : ne pas redémarrer
+    networks: [cairn_network]
+
+  # ----------------------------------------------------------------------
+  # Streamlit - UI principale (onglets Revenue / Health / Churn Risk / Monitoring)
+  # Construit depuis Dockerfile.streamlit pour que les versions soient épinglées.
+  # ----------------------------------------------------------------------
+  streamlit:
+    build:
+      context: .
+      dockerfile: streamlit/Dockerfile
+    container_name: cairn_streamlit
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cairn}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-cairn}
+      # Variables consommées par ingestion/config.py settings(), nécessaires
+      # pour que les loaders du dashboard puissent atteindre les marts dbt.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-cairn}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-cairn}
+      PREFECT_API_URL: http://prefect:4200/api
+      PROMETHEUS_URL: http://prometheus:9090
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    ports: ["8601:8501"]
+    depends_on:
+      postgres:   { condition: service_healthy }
+      bootstrap:  { condition: service_completed_successfully }   # ← attend que le pipeline ait rempli la base
+      prefect:    { condition: service_started }
+      mlflow:     { condition: service_started }
+      prometheus: { condition: service_started }
+    volumes:
+      - .:/app
+    networks: [cairn_network]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ----------------------------------------------------------------------
+  # Loadgen - trafic synthétique permanent vers l'API.
+  # ----------------------------------------------------------------------
+  # Pourquoi : Prometheus n'a de séries de latence que si l'API reçoit du
+  # trafic. Sans loadgen, le dashboard "État du pipeline" (et Grafana SLO)
+  # tombe en fallback synthétique au démarrage. Avec loadgen, la stack est
+  # 100 % live dès `make up` - aucun mode démo par défaut.
+  # ----------------------------------------------------------------------
+  loadgen:
+    image: alpine:3.20
+    container_name: cairn_loadgen
+    # busybox wget : ping /model/info toutes les 3 s (endpoint metrics-instrumenté)
+    command: ["sh", "-c", "while true; do wget -q -O - http://api:8000/model/info > /dev/null 2>&1 || true; sleep 3; done"]
+    depends_on:
+      api: { condition: service_started }
+    restart: unless-stopped
+    networks: [cairn_network]
+
+  # ======================================================================
+  # Stack d'observabilité (profil : obs)
+  #   docker compose --profile obs up -d
+  # ======================================================================
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: cairn_prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports: ["9090:9090"]
+    networks: [cairn_network]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  loki:
+    image: grafana/loki:3.3.2
+    container_name: cairn_loki
+    profiles: [obs]
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./observability/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/tmp/loki
+    ports: ["3100:3100"]
+    networks: [cairn_network]
+
+  promtail:
+    image: grafana/promtail:3.3.2
+    container_name: cairn_promtail
+    profiles: [obs]
+    command: ["-config.file=/etc/promtail/config.yml"]
+    volumes:
+      - ./observability/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail_positions:/tmp
+    depends_on: [loki]
+    networks: [cairn_network]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: cairn_grafana
+    profiles: [obs]
+    environment:
+      GF_SECURITY_ADMIN_USER:     ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Consommé par provisioning/datasources/datasources.yml (interpolation
+      # ${POSTGRES_PASSWORD} au chargement de la datasource Postgres).
+      POSTGRES_PASSWORD:          ${POSTGRES_PASSWORD:-password}
+      GF_USERS_ALLOW_SIGN_UP:     "false"
+      GF_AUTH_ANONYMOUS_ENABLED:  "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_INSTALL_PLUGINS:         ""
+      GF_FEATURE_TOGGLES_ENABLE:  publicDashboards
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports: ["3200:3000"]
+    depends_on: [prometheus, loki]
+    networks: [cairn_network]
+
+volumes:
+  postgres_data:      { driver: local }
+  mlflow_artifacts:   { driver: local }
+  mlflow_data:        { driver: local }
+  prometheus_data:    { driver: local }
+  loki_data:          { driver: local }
+  promtail_positions: { driver: local }
+  grafana_data:       { driver: local }
+
+networks:
+  cairn_network:    { driver: bridge }

@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cairn-analytics"
+version = "1.0.0"
+description = "Cairn : end-to-end SaaS product analytics + churn ML platform"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Lohana Utim" }]
+license = { text = "All rights reserved" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["seed*", "ingestion*", "ml*", "api*", "flows*",
+           "monitoring*", "great_expectations*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# On exclut uniquement les sorties generees (CSV, rapports, artefacts dbt),
+# pas data/loader.py qui est du vrai code source a linter.
+exclude = ["data/raw", "data/ge_reports", "data/evidently_reports",
+           "dbt/target", "dbt/dbt_packages"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "E501",    # longueur de ligne geree par le formateur, pas bloquante
+    "B008",    # appel de fonction en argument par defaut (FastAPI Depends)
+    "RUF012",  # annotations ClassVar non requises ici
+    "SIM117",  # with imbriques : lisibles tels quels dans les pages Streamlit
+    "RUF001",  # caracteres unicode "ambigus" (-, ×, ›) volontaires dans les libelles FR de l'UI
+    "RUF002",  # idem dans les docstrings
+    "RUF003",  # idem dans les commentaires
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra -q --strict-markers"
+markers = [
+    "integration: tests that require a live Postgres (testcontainers).",
+    "slow: long-running tests (dbt build, Evidently, full train).",
+]
+
+[tool.coverage.run]
+source = ["seed", "ingestion", "ml", "api",
+          "great_expectations", "monitoring", "flows"]
+omit = ["tests/*", "*/__init__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
