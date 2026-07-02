@@ -1,0 +1,36 @@
+name: docker-build
+
+on:
+  push:
+    branches: [main]
+    tags:    ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Chaque image a son Dockerfile dans son propre dossier (build context = racine).
+        image:
+          - { name: "cairn-pipeline",  file: "pipeline/Dockerfile"  }
+          - { name: "cairn-api",       file: "api/Dockerfile"       }
+          - { name: "cairn-prefect",   file: "flows/Dockerfile"     }
+          - { name: "cairn-streamlit", file: "streamlit/Dockerfile" }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (no push - verify Dockerfiles compile cleanly)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.image.file }}
+          push: false
+          tags: ${{ matrix.image.name }}:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
