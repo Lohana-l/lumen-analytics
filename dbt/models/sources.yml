@@ -1,0 +1,25 @@
+version: 2
+
+sources:
+  - name: raw
+    database: cairn
+    schema: raw
+    description: "Tables de la zone d'atterrissage, alimentées par ingestion/main.py."
+    # Fraîcheur par défaut pour toutes les tables raw : elles sont toutes
+    # rechargées par le même daily_refresh, donc mêmes seuils partout.
+    # created_at est posé par Postgres à l'insertion (colonne d'audit).
+    loaded_at_field: created_at
+    freshness:
+      warn_after: { count: 25, period: hour }
+      error_after: { count: 72, period: hour }
+    tables:
+      - name: accounts
+        description: "Une ligne par organisation cliente."
+      - name: subscriptions
+        description: "État du plan/seats dans le temps (SCD2-like valid_from/valid_to)."
+      - name: invoices
+        description: "Enregistrements de facturation mensuels."
+      - name: events
+        description: "Événements produit (login, feature_use, …)."
+      - name: tickets
+        description: "Tickets support + CSAT."

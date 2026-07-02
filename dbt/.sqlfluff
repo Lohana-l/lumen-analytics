@@ -1,0 +1,14 @@
+[sqlfluff]
+dialect = postgres
+templater = jinja
+exclude_rules = AM04, LT05, ST05, RF02, RF04, CV02
+
+[sqlfluff:indentation]
+indented_joins = false
+indented_using_on = false
+
+[sqlfluff:rules:capitalisation.keywords]
+capitalisation_policy = lower
+
+[sqlfluff:rules:capitalisation.identifiers]
+extended_capitalisation_policy = lower

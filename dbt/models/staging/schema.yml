@@ -1,0 +1,91 @@
+version: 2
+
+models:
+  - name: stg_accounts
+    description: "Comptes clients nettoyés (clé naturelle : account_id)."
+    columns:
+      - name: account_id
+        description: "Clé naturelle."
+        tests: [not_null, unique]
+      - name: current_plan
+        description: "Valeur parmi starter / pro / enterprise."
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["starter", "pro", "enterprise"]
+      - name: acquisition_channel
+        tests:
+          - accepted_values:
+              values: ["paid", "organic", "referral", "outbound"]
+      - name: is_churned
+        tests: [not_null]
+
+  - name: stg_subscriptions
+    columns:
+      - name: subscription_id
+        tests: [not_null, unique]
+      - name: account_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_accounts')
+              field: account_id
+      - name: mrr
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+      - name: seats
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+
+  - name: stg_invoices
+    columns:
+      - name: invoice_id
+        tests: [not_null, unique]
+      - name: account_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_accounts')
+              field: account_id
+      - name: status
+        tests:
+          - accepted_values:
+              values: ["paid", "overdue", "failed", "refunded"]
+
+  - name: stg_events
+    columns:
+      - name: event_id
+        tests: [not_null, unique]
+      - name: account_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_accounts')
+              field: account_id
+      - name: event_type
+        tests:
+          - accepted_values:
+              values: ["login", "feature_use", "export", "invite_user", "dashboard_view"]
+
+  - name: stg_tickets
+    columns:
+      - name: ticket_id
+        tests: [not_null, unique]
+      - name: account_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_accounts')
+              field: account_id
+      - name: priority
+        tests:
+          - accepted_values:
+              values: ["low", "medium", "high", "urgent"]
+      - name: csat
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "is null or (csat between 1 and 5)"

@@ -1,0 +1,118 @@
+version: 2
+
+models:
+  - name: dim_account
+    description: "Dimension client SCD type-1 : une ligne par compte."
+    columns:
+      - name: account_id
+        tests: [not_null, unique]
+      - name: current_plan
+        tests:
+          - accepted_values:
+              values: ["starter", "pro", "enterprise"]
+      - name: tenure_months
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+
+  - name: dim_plan
+    columns:
+      - name: plan_id
+        tests: [not_null, unique]
+
+  - name: dim_date
+    columns:
+      - name: date_day
+        tests: [not_null, unique]
+
+  - name: dim_industry
+    columns:
+      - name: industry_id
+        tests: [not_null, unique]
+
+  - name: fct_mrr_monthly
+    # Unicité composite : un doublon (mois, compte) dupliquerait silencieusement
+    # le MRR agrégé sans déclencher le moindre test mono-colonne.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [month_start, account_id]
+    columns:
+      - name: account_id
+        tests:
+          - relationships:
+              to: ref('dim_account')
+              field: account_id
+      - name: mrr
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+
+  - name: fct_mrr_movements
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [month_start, account_id]
+    columns:
+      - name: movement_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["new", "churn", "expansion", "contraction", "steady"]
+
+  - name: fct_engagement_daily
+    columns:
+      - name: events
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+
+  - name: fct_tickets_monthly
+    columns:
+      - name: account_id
+        tests:
+          - relationships:
+              to: ref('dim_account')
+              field: account_id
+
+  - name: mart_account_health
+    description: "Une ligne par compte à reporting_date, consommé par Streamlit + ML."
+    columns:
+      - name: account_id
+        tests: [not_null, unique]
+      - name: mrr
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+      - name: stickiness_30d
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "is null or stickiness_30d between 0 and 1"
+      - name: rule_based_health_score
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "between 0 and 100"
+
+  - name: mart_ml_training
+    description: >
+      Jeu d'entraînement point-in-time avec coupure temporelle (cut =
+      reporting_date - 180j) : population = comptes actifs à cut, features
+      calculées à cut, label = churn dans (cut, reporting_date]. Évite le
+      target leakage post-churn ET la mémorisation train/serve (les lignes
+      servies à reporting_date ne sont jamais des lignes d'entraînement).
+      Consommé par ml.train et Evidently (référence drift).
+    columns:
+      - name: account_id
+        tests: [not_null, unique]
+      # Tout compte du jeu d'entraînement est actif à la coupure : il a
+      # forcément un abonnement en vigueur, donc un MRR strictement positif.
+      # Garde-fou anti-leakage (un mrr=0 signalerait des features post-churn).
+      - name: mrr
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> 0"
+      - name: stickiness_30d
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "between 0 and 1"

@@ -1,0 +1,12 @@
+cairn:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('DBT_POSTGRES_HOST', 'postgres') }}"
+      port: "{{ env_var('DBT_POSTGRES_PORT', '5432') | int }}"
+      user: "{{ env_var('DBT_POSTGRES_USER', 'cairn') }}"
+      password: "{{ env_var('DBT_POSTGRES_PASS', 'password') }}"
+      dbname: "{{ env_var('DBT_POSTGRES_DBNAME', 'cairn') }}"
+      schema: "{{ env_var('DBT_POSTGRES_SCHEMA', 'marts') }}"
+      threads: 4
